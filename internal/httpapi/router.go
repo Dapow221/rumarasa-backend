@@ -14,6 +14,7 @@ type Server struct {
 	cfg         *config.Config
 	store       *store.Store
 	authLimiter *rateLimiter
+	formLimiter *rateLimiter
 }
 
 func NewServer(cfg *config.Config, st *store.Store) *Server {
@@ -21,6 +22,7 @@ func NewServer(cfg *config.Config, st *store.Store) *Server {
 		cfg:         cfg,
 		store:       st,
 		authLimiter: newRateLimiter(10, time.Minute),
+		formLimiter: newRateLimiter(5, 10*time.Minute),
 	}
 }
 
@@ -34,14 +36,28 @@ func (s *Server) Handler() http.Handler {
 	})
 
 	// Auth — separately and aggressively rate-limited
-	mux.Handle("POST /api/v1/auth/login", s.rateLimitAuth(http.HandlerFunc(s.handleLogin)))
-	mux.Handle("POST /api/v1/auth/refresh", s.rateLimitAuth(http.HandlerFunc(s.handleRefresh)))
+	mux.Handle("POST /api/v1/auth/login", s.rateLimit(s.authLimiter, http.HandlerFunc(s.handleLogin)))
+	mux.Handle("POST /api/v1/auth/refresh", s.rateLimit(s.authLimiter, http.HandlerFunc(s.handleRefresh)))
 	mux.HandleFunc("POST /api/v1/auth/logout", s.handleLogout)
 
 	// Content blocks (click-to-edit text)
 	mux.HandleFunc("GET /api/v1/content", s.handleListContent)
 	mux.Handle("PUT /api/v1/content/{key}", s.admin(s.handleUpsertContent))
 	mux.Handle("DELETE /api/v1/content/{key}", s.admin(s.handleDeleteContent))
+
+	// Public submissions from the site's forms — rate-limited per IP
+	mux.Handle("POST /api/v1/members", s.rateLimit(s.formLimiter, http.HandlerFunc(s.handleCreateMember)))
+	mux.Handle("POST /api/v1/reservations", s.rateLimit(s.formLimiter, http.HandlerFunc(s.handleCreateReservation)))
+
+	// Admin back office for those submissions
+	mux.Handle("GET /api/v1/admin/summary", s.admin(s.handleAdminSummary))
+	mux.Handle("GET /api/v1/admin/members", s.admin(s.handleListMembers))
+	mux.Handle("GET /api/v1/admin/members/export", s.admin(s.handleExportMembers))
+	mux.Handle("PATCH /api/v1/admin/members/{id}", s.admin(s.handleUpdateMember))
+	mux.Handle("DELETE /api/v1/admin/members/{id}", s.admin(s.handleDeleteMember))
+	mux.Handle("GET /api/v1/admin/reservations", s.admin(s.handleListReservations))
+	mux.Handle("PATCH /api/v1/admin/reservations/{id}", s.admin(s.handleUpdateReservation))
+	mux.Handle("DELETE /api/v1/admin/reservations/{id}", s.admin(s.handleDeleteReservation))
 
 	// Collections (dishes, promos, happenings, facilities, member-benefits)
 	mux.HandleFunc("GET /api/v1/{collection}", s.handleListItems)

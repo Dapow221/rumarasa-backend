@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -117,15 +118,30 @@ func (rl *rateLimiter) allow(key string) bool {
 	return true
 }
 
-func (s *Server) rateLimitAuth(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ip, _, err := net.SplitHostPort(r.RemoteAddr)
-		if err != nil {
-			ip = r.RemoteAddr
+// clientIP returns the caller's address. Behind the local reverse proxy
+// (Caddy) every connection comes from loopback, so the real client is the
+// last X-Forwarded-For hop — the one the proxy itself appended.
+func clientIP(r *http.Request) string {
+	ip, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		ip = r.RemoteAddr
+	}
+	if parsed := net.ParseIP(ip); parsed != nil && parsed.IsLoopback() {
+		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+			hops := strings.Split(xff, ",")
+			if last := strings.TrimSpace(hops[len(hops)-1]); net.ParseIP(last) != nil {
+				return last
+			}
 		}
-		if !s.authLimiter.allow(ip) {
-			w.Header().Set("Retry-After", "60")
-			respondError(w, http.StatusTooManyRequests, "rate_limited", "Too many attempts, try again in a minute")
+	}
+	return ip
+}
+
+func (s *Server) rateLimit(rl *rateLimiter, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !rl.allow(clientIP(r)) {
+			w.Header().Set("Retry-After", strconv.Itoa(int(rl.window.Seconds())))
+			respondError(w, http.StatusTooManyRequests, "rate_limited", "Too many requests, please try again later")
 			return
 		}
 		next.ServeHTTP(w, r)

@@ -23,6 +23,17 @@ func respondData(w http.ResponseWriter, status int, data any) {
 	writeJSON(w, status, map[string]any{"data": data})
 }
 
+type listMeta struct {
+	Total   int  `json:"total"`
+	Page    int  `json:"page"`
+	Limit   int  `json:"limit"`
+	HasMore bool `json:"hasMore"`
+}
+
+func respondList(w http.ResponseWriter, data any, meta listMeta) {
+	writeJSON(w, http.StatusOK, map[string]any{"data": data, "meta": meta})
+}
+
 func respondError(w http.ResponseWriter, status int, code, message string) {
 	writeJSON(w, status, map[string]any{"error": errorBody{Code: code, Message: message}})
 }
