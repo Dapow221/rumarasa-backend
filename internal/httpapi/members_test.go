@@ -35,7 +35,7 @@ func newTestServer(t *testing.T) (http.Handler, string) {
 	if err := db.Migrate(ctx, pool); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pool.Exec(ctx, `TRUNCATE members, reservations RESTART IDENTITY; ALTER SEQUENCE member_no_seq RESTART`); err != nil {
+	if _, err := pool.Exec(ctx, `TRUNCATE vouchers, members, reservations RESTART IDENTITY; ALTER SEQUENCE member_no_seq RESTART`); err != nil {
 		t.Fatal(err)
 	}
 

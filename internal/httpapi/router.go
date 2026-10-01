@@ -59,6 +59,14 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("PATCH /api/v1/admin/reservations/{id}", s.admin(s.handleUpdateReservation))
 	mux.Handle("DELETE /api/v1/admin/reservations/{id}", s.admin(s.handleDeleteReservation))
 
+	// Gift vouchers: issue, assign to a member, send, redeem at the cashier
+	mux.Handle("GET /api/v1/admin/vouchers", s.admin(s.handleListVouchers))
+	mux.Handle("POST /api/v1/admin/vouchers", s.admin(s.handleCreateVoucher))
+	mux.Handle("PATCH /api/v1/admin/vouchers/{id}", s.admin(s.handleUpdateVoucher))
+	mux.Handle("DELETE /api/v1/admin/vouchers/{id}", s.admin(s.handleDeleteVoucher))
+	mux.Handle("POST /api/v1/admin/vouchers/{id}/sent", s.admin(s.handleSendVoucher))
+	mux.Handle("POST /api/v1/admin/vouchers/{id}/redeem", s.admin(s.handleRedeemVoucher))
+
 	// Collections (dishes, promos, happenings, facilities, member-benefits)
 	mux.HandleFunc("GET /api/v1/{collection}", s.handleListItems)
 	mux.Handle("POST /api/v1/{collection}", s.admin(s.handleCreateItem))
