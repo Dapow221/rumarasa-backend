@@ -66,6 +66,12 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("DELETE /api/v1/admin/vouchers/{id}", s.admin(s.handleDeleteVoucher))
 	mux.Handle("POST /api/v1/admin/vouchers/{id}/sent", s.admin(s.handleSendVoucher))
 	mux.Handle("POST /api/v1/admin/vouchers/{id}/redeem", s.admin(s.handleRedeemVoucher))
+	mux.Handle("POST /api/v1/admin/vouchers/{id}/link", s.admin(s.handleCreateVoucherLink))
+	mux.Handle("DELETE /api/v1/admin/vouchers/{id}/link", s.admin(s.handleDeleteVoucherLink))
+
+	// Link vouchers for non-members: the secret token is the only key
+	mux.HandleFunc("GET /api/v1/vouchers/link/{token}", s.handleGetVoucherByLink)
+	mux.Handle("POST /api/v1/vouchers/link/{token}/redeem", s.rateLimit(s.formLimiter, http.HandlerFunc(s.handleRedeemVoucherByLink)))
 
 	// Collections (dishes, promos, happenings, facilities, member-benefits)
 	mux.HandleFunc("GET /api/v1/{collection}", s.handleListItems)

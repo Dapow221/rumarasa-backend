@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -121,7 +122,7 @@ func (s *Server) handleSendVoucher(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	adminID, _ := adminIDFrom(r.Context())
-	slog.Info("voucher sent", "admin_id", adminID, "voucher_id", v.ID, "member_id", v.Member.ID)
+	slog.Info("voucher sent", "admin_id", adminID, "voucher_id", v.ID, "by_link", v.LinkToken != nil)
 	respondData(w, http.StatusOK, v)
 }
 
@@ -152,4 +153,90 @@ func (s *Server) handleDeleteVoucher(w http.ResponseWriter, r *http.Request) {
 	adminID, _ := adminIDFrom(r.Context())
 	slog.Info("voucher deleted", "admin_id", adminID, "voucher_id", id)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleCreateVoucherLink(w http.ResponseWriter, r *http.Request) {
+	id, ok := itemID(w, r)
+	if !ok {
+		return
+	}
+	v, err := s.store.CreateVoucherLink(r.Context(), id)
+	if err != nil {
+		respondVoucherErr(w, err)
+		return
+	}
+	adminID, _ := adminIDFrom(r.Context())
+	slog.Info("voucher link created", "admin_id", adminID, "voucher_id", v.ID)
+	respondData(w, http.StatusOK, v)
+}
+
+func (s *Server) handleDeleteVoucherLink(w http.ResponseWriter, r *http.Request) {
+	id, ok := itemID(w, r)
+	if !ok {
+		return
+	}
+	v, err := s.store.DeleteVoucherLink(r.Context(), id)
+	if err != nil {
+		respondVoucherErr(w, err)
+		return
+	}
+	adminID, _ := adminIDFrom(r.Context())
+	slog.Info("voucher link removed", "admin_id", adminID, "voucher_id", v.ID)
+	respondData(w, http.StatusOK, v)
+}
+
+// ---------- Public: link vouchers ----------
+
+var linkTokenRe = regexp.MustCompile(`^[A-Za-z0-9_-]{32}$`)
+
+// linkToken reads the token from the path. Responses are never cached: the
+// URL is a secret and the voucher's state changes once it's redeemed.
+func linkToken(w http.ResponseWriter, r *http.Request) (string, bool) {
+	w.Header().Set("Cache-Control", "no-store")
+	t := r.PathValue("token")
+	if !linkTokenRe.MatchString(t) {
+		respondError(w, http.StatusNotFound, "not_found", "Voucher not found")
+		return "", false
+	}
+	return t, true
+}
+
+func (s *Server) handleGetVoucherByLink(w http.ResponseWriter, r *http.Request) {
+	token, ok := linkToken(w, r)
+	if !ok {
+		return
+	}
+	v, err := s.store.GetVoucherByLink(r.Context(), token)
+	if err != nil {
+		respondVoucherErr(w, err)
+		return
+	}
+	respondData(w, http.StatusOK, v)
+}
+
+func (s *Server) handleRedeemVoucherByLink(w http.ResponseWriter, r *http.Request) {
+	token, ok := linkToken(w, r)
+	if !ok {
+		return
+	}
+	var body store.LinkRedemption
+	isBot, ok := decodePublicForm(w, r, &body)
+	if !ok {
+		return
+	}
+	if isBot {
+		respondError(w, http.StatusBadRequest, "validation", "invalid request")
+		return
+	}
+	if err := body.Validate(); err != nil {
+		respondError(w, http.StatusBadRequest, "validation", err.Error())
+		return
+	}
+	v, err := s.store.RedeemVoucherByLink(r.Context(), token, body)
+	if err != nil {
+		respondVoucherErr(w, err)
+		return
+	}
+	slog.Info("voucher redeemed by link")
+	respondData(w, http.StatusOK, v)
 }

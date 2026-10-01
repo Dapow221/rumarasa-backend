@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"strings"
 	"testing"
 	"time"
 )
@@ -163,5 +164,100 @@ func TestVoucherCodesExhausted(t *testing.T) {
 	}
 	if res := do(t, h, "POST", "/api/v1/admin/vouchers", token, map[string]any{"amount": 10000}); errCode(res) != "codes_exhausted" {
 		t.Fatalf("101st voucher: got %d %s", res.Status, res.Raw)
+	}
+}
+
+func TestVoucherLinkForNonMember(t *testing.T) {
+	h, token := newTestServer(t)
+	member := signupActive(t, h, token, "081200000009")
+
+	res := do(t, h, "POST", "/api/v1/admin/vouchers", token, map[string]any{"amount": 100000, "note": "Untuk tamu"})
+	id := int(res.Body["data"].(map[string]any)["id"].(float64))
+	path := fmt.Sprintf("/api/v1/admin/vouchers/%d", id)
+
+	res = do(t, h, "POST", path+"/link", token, nil)
+	if res.Status != http.StatusOK {
+		t.Fatalf("create link: got %d %s", res.Status, res.Raw)
+	}
+	link := res.Body["data"].(map[string]any)["link_token"].(string)
+	if len(link) != 32 {
+		t.Fatalf("unexpected token %q", link)
+	}
+
+	// Linked vouchers can't also go to a member, and only the customer redeems them.
+	if res := do(t, h, "PATCH", path, token, map[string]any{"member_id": member}); errCode(res) != "link_active" {
+		t.Fatalf("assign linked voucher: got %d %s", res.Status, res.Raw)
+	}
+	if res := do(t, h, "POST", path+"/redeem", token, nil); errCode(res) != "link_voucher" {
+		t.Fatalf("cashier redeem of link voucher: got %d %s", res.Status, res.Raw)
+	}
+	if res := do(t, h, "POST", path+"/sent", token, nil); res.Status != http.StatusOK {
+		t.Fatalf("mark link sent: got %d %s", res.Status, res.Raw)
+	}
+
+	pub := "/api/v1/vouchers/link/" + link
+	res = do(t, h, "GET", pub, "", nil)
+	d := res.Body["data"].(map[string]any)
+	if res.Status != http.StatusOK || d["amount"] != float64(100000) || d["status"] != "active" || d["code"] != nil {
+		t.Fatalf("public view before redeem must hide the code: got %d %s", res.Status, res.Raw)
+	}
+	if res := do(t, h, "GET", "/api/v1/vouchers/link/"+strings.Repeat("A", 32), "", nil); res.Status != http.StatusNotFound {
+		t.Fatalf("unknown token: got %d", res.Status)
+	}
+
+	bad := map[string]any{"name": "Rina", "email": "nope", "consent": true}
+	if res := do(t, h, "POST", pub+"/redeem", "", bad); res.Status != http.StatusBadRequest {
+		t.Fatalf("bad email: got %d %s", res.Status, res.Raw)
+	}
+	good := map[string]any{"name": "Rina Wulandari", "email": "Rina@Example.com", "phone": "0813 1111 2222", "consent": true}
+	res = do(t, h, "POST", pub+"/redeem", "", good)
+	d = res.Body["data"].(map[string]any)
+	if res.Status != http.StatusOK || d["status"] != "redeemed" || d["code"] == nil || d["recipient_name"] != "Rina Wulandari" {
+		t.Fatalf("redeem by link: got %d %s", res.Status, res.Raw)
+	}
+	if res := do(t, h, "POST", pub+"/redeem", "", good); errCode(res) != "already_redeemed" {
+		t.Fatalf("second redeem: got %d %s", res.Status, res.Raw)
+	}
+
+	res = do(t, h, "GET", "/api/v1/admin/vouchers?status=redeemed&q=wulandari", token, nil)
+	list := res.Body["data"].([]any)
+	if len(list) != 1 {
+		t.Fatalf("admin search by recipient: got %s", res.Raw)
+	}
+	v := list[0].(map[string]any)
+	r := v["recipient"].(map[string]any)
+	if v["redeemed_via"] != "link" || r["email"] != "rina@example.com" || r["phone"] != "6281311112222" {
+		t.Fatalf("unexpected admin view: %v", v)
+	}
+	if res := do(t, h, "DELETE", path+"/link", token, nil); errCode(res) != "already_redeemed" {
+		t.Fatalf("remove link after redeem: got %d %s", res.Status, res.Raw)
+	}
+}
+
+func TestVoucherLinkRevoke(t *testing.T) {
+	h, token := newTestServer(t)
+	member := signupActive(t, h, token, "081200000008")
+
+	res := do(t, h, "POST", "/api/v1/admin/vouchers", token, map[string]any{"amount": 50000, "member_id": member})
+	id := int(res.Body["data"].(map[string]any)["id"].(float64))
+	path := fmt.Sprintf("/api/v1/admin/vouchers/%d", id)
+	if res := do(t, h, "POST", path+"/link", token, nil); errCode(res) != "member_assigned" {
+		t.Fatalf("link on member voucher: got %d %s", res.Status, res.Raw)
+	}
+
+	do(t, h, "PATCH", path, token, map[string]any{"member_id": nil})
+	first := do(t, h, "POST", path+"/link", token, nil).Body["data"].(map[string]any)["link_token"].(string)
+	second := do(t, h, "POST", path+"/link", token, nil).Body["data"].(map[string]any)["link_token"].(string)
+	if first == second {
+		t.Fatal("re-creating a link must rotate the token")
+	}
+	if res := do(t, h, "GET", "/api/v1/vouchers/link/"+first, "", nil); res.Status != http.StatusNotFound {
+		t.Fatalf("old link after rotation: got %d", res.Status)
+	}
+	if res := do(t, h, "DELETE", path+"/link", token, nil); res.Status != http.StatusOK {
+		t.Fatalf("remove link: got %d %s", res.Status, res.Raw)
+	}
+	if res := do(t, h, "GET", "/api/v1/vouchers/link/"+second, "", nil); res.Status != http.StatusNotFound {
+		t.Fatalf("removed link: got %d", res.Status)
 	}
 }

@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"math/big"
+	"net/mail"
 	"regexp"
 	"slices"
 	"strings"
@@ -69,24 +71,35 @@ type VoucherMember struct {
 	Tier     string  `json:"tier"`
 }
 
+// VoucherRecipient is the non-member who redeemed a link voucher.
+type VoucherRecipient struct {
+	Name  string  `json:"name"`
+	Phone *string `json:"phone"`
+	Email string  `json:"email"`
+}
+
 type Voucher struct {
-	ID         int            `json:"id"`
-	Code       string         `json:"code"`
-	Amount     int            `json:"amount"`
-	Note       string         `json:"note"`
-	ExpiresAt  *string        `json:"expires_at"`
-	Status     string         `json:"status"`
-	Expired    bool           `json:"expired"`
-	Member     *VoucherMember `json:"member"`
-	AssignedAt *time.Time     `json:"assigned_at"`
-	SentAt     *time.Time     `json:"sent_at"`
-	RedeemedAt *time.Time     `json:"redeemed_at"`
-	CreatedAt  time.Time      `json:"created_at"`
-	UpdatedAt  time.Time      `json:"updated_at"`
+	ID          int               `json:"id"`
+	Code        string            `json:"code"`
+	Amount      int               `json:"amount"`
+	Note        string            `json:"note"`
+	ExpiresAt   *string           `json:"expires_at"`
+	Status      string            `json:"status"`
+	Expired     bool              `json:"expired"`
+	Member      *VoucherMember    `json:"member"`
+	LinkToken   *string           `json:"link_token"`
+	Recipient   *VoucherRecipient `json:"recipient"`
+	RedeemedVia *string           `json:"redeemed_via"`
+	AssignedAt  *time.Time        `json:"assigned_at"`
+	SentAt      *time.Time        `json:"sent_at"`
+	RedeemedAt  *time.Time        `json:"redeemed_at"`
+	CreatedAt   time.Time         `json:"created_at"`
+	UpdatedAt   time.Time         `json:"updated_at"`
 }
 
 const voucherSelect = `SELECT v.id, v.code, v.amount, v.note, v.expires_at::text, v.status,
 	COALESCE(v.status = 'active' AND v.expires_at < ` + jakartaToday + `, false),
+	v.link_token, v.recipient_name, v.recipient_phone, v.recipient_email, v.redeemed_via,
 	v.assigned_at, v.sent_at, v.redeemed_at, v.created_at, v.updated_at,
 	m.id, m.member_no, m.name, m.phone, m.email, m.status, m.tier
 	FROM vouchers v LEFT JOIN members m ON m.id = v.member_id`
@@ -95,7 +108,9 @@ func scanVoucher(row pgx.Row) (*Voucher, error) {
 	var v Voucher
 	var mID *int
 	var mNo, mName, mPhone, mEmail, mStatus, mTier *string
+	var rName, rPhone, rEmail *string
 	err := row.Scan(&v.ID, &v.Code, &v.Amount, &v.Note, &v.ExpiresAt, &v.Status, &v.Expired,
+		&v.LinkToken, &rName, &rPhone, &rEmail, &v.RedeemedVia,
 		&v.AssignedAt, &v.SentAt, &v.RedeemedAt, &v.CreatedAt, &v.UpdatedAt,
 		&mID, &mNo, &mName, &mPhone, &mEmail, &mStatus, &mTier)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -106,6 +121,9 @@ func scanVoucher(row pgx.Row) (*Voucher, error) {
 	}
 	if mID != nil {
 		v.Member = &VoucherMember{ID: *mID, MemberNo: mNo, Name: *mName, Phone: *mPhone, Email: *mEmail, Status: *mStatus, Tier: *mTier}
+	}
+	if rName != nil {
+		v.Recipient = &VoucherRecipient{Name: *rName, Phone: rPhone, Email: *rEmail}
 	}
 	return &v, nil
 }
@@ -291,7 +309,8 @@ func (s *Store) ListVouchers(ctx context.Context, f VoucherFilter) ([]Voucher, i
 	if q := strings.TrimSpace(f.Query); q != "" {
 		args = append(args, "%"+escapeLike(q)+"%")
 		conds = append(conds, fmt.Sprintf(
-			"(v.code ILIKE $%[1]d OR m.name ILIKE $%[1]d OR m.phone ILIKE $%[1]d OR m.member_no ILIKE $%[1]d)", len(args)))
+			"(v.code ILIKE $%[1]d OR m.name ILIKE $%[1]d OR m.phone ILIKE $%[1]d OR m.member_no ILIKE $%[1]d"+
+				" OR v.recipient_name ILIKE $%[1]d OR v.recipient_phone ILIKE $%[1]d OR v.recipient_email ILIKE $%[1]d)", len(args)))
 	}
 	where := strings.Join(conds, " AND ")
 
@@ -368,7 +387,9 @@ func (s *Store) UpdateVoucher(ctx context.Context, id int, u VoucherUpdate) (*Vo
 
 	var status string
 	var memberID *int
-	err = tx.QueryRow(ctx, `SELECT status, member_id FROM vouchers WHERE id = $1 FOR UPDATE`, id).Scan(&status, &memberID)
+	var hasLink bool
+	err = tx.QueryRow(ctx, `SELECT status, member_id, link_token IS NOT NULL FROM vouchers WHERE id = $1 FOR UPDATE`,
+		id).Scan(&status, &memberID, &hasLink)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -380,6 +401,9 @@ func (s *Store) UpdateVoucher(ctx context.Context, id int, u VoucherUpdate) (*Vo
 	}
 
 	reassign := u.MemberID.Set && !equalPtr(u.MemberID.Value, memberID)
+	if reassign && u.MemberID.Value != nil && hasLink {
+		return nil, voucherErr("link_active", "This voucher is shared by link; remove the link before giving it to a member")
+	}
 	if reassign && u.MemberID.Value != nil {
 		if err := requireActiveMember(ctx, tx, *u.MemberID.Value); err != nil {
 			return nil, err
@@ -418,7 +442,7 @@ func equalPtr(a, b *int) bool {
 func (s *Store) MarkVoucherSent(ctx context.Context, id int) (*Voucher, error) {
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE vouchers SET sent_at = now(), updated_at = now()
-		WHERE id = $1 AND member_id IS NOT NULL AND status = 'active'`, id)
+		WHERE id = $1 AND (member_id IS NOT NULL OR link_token IS NOT NULL) AND status = 'active'`, id)
 	if err != nil {
 		return nil, err
 	}
@@ -427,8 +451,8 @@ func (s *Store) MarkVoucherSent(ctx context.Context, id int) (*Voucher, error) {
 		return nil, err
 	}
 	if tag.RowsAffected() == 0 {
-		if v.Member == nil {
-			return nil, voucherErr("not_assigned", "Assign the voucher to a member before sending it")
+		if v.Member == nil && v.LinkToken == nil {
+			return nil, voucherErr("not_assigned", "Give the voucher to a member or create a link before sending it")
 		}
 		return nil, voucherErr("not_active", "Only active vouchers can be sent")
 	}
@@ -439,7 +463,7 @@ func (s *Store) MarkVoucherSent(ctx context.Context, id int) (*Voucher, error) {
 // UPDATE makes double redemption impossible even with two tills at once.
 func (s *Store) RedeemVoucher(ctx context.Context, id int) (*Voucher, error) {
 	tag, err := s.pool.Exec(ctx, `
-		UPDATE vouchers v SET status = 'redeemed', redeemed_at = now(), updated_at = now()
+		UPDATE vouchers v SET status = 'redeemed', redeemed_via = 'cashier', redeemed_at = now(), updated_at = now()
 		FROM members m
 		WHERE v.id = $1 AND v.status = 'active'
 			AND (v.expires_at IS NULL OR v.expires_at >= `+jakartaToday+`)
@@ -461,6 +485,8 @@ func (s *Store) RedeemVoucher(ctx context.Context, id int) (*Voucher, error) {
 		return nil, voucherErr("voided", "This voucher has been voided")
 	case v.Expired:
 		return nil, voucherErr("expired", "This voucher has expired")
+	case v.LinkToken != nil:
+		return nil, voucherErr("link_voucher", "Link vouchers are redeemed by the customer on the website")
 	case v.Member == nil:
 		return nil, voucherErr("not_assigned", "This voucher is not assigned to a member")
 	default:
@@ -483,4 +509,152 @@ func (s *Store) DeleteVoucher(ctx context.Context, id int) error {
 		return err
 	}
 	return voucherErr("not_deletable", "Sent or redeemed vouchers can't be deleted; void them instead")
+}
+
+// ---------- Link vouchers (non-members) ----------
+
+// CreateVoucherLink gives an unassigned voucher a fresh secret link token,
+// replacing any earlier one so a leaked link can be revoked by re-creating it.
+func (s *Store) CreateVoucherLink(ctx context.Context, id int) (*Voucher, error) {
+	raw := make([]byte, 24)
+	if _, err := rand.Read(raw); err != nil {
+		return nil, err
+	}
+	token := base64.RawURLEncoding.EncodeToString(raw)
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE vouchers SET link_token = $2, sent_at = NULL, updated_at = now()
+		WHERE id = $1 AND status = 'active' AND member_id IS NULL`, id, token)
+	if err != nil {
+		return nil, err
+	}
+	v, err := s.GetVoucher(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if tag.RowsAffected() == 0 {
+		if v.Member != nil {
+			return nil, voucherErr("member_assigned", "This voucher is given to a member; remove the member first")
+		}
+		return nil, voucherErr("not_active", "Only active vouchers can be shared by link")
+	}
+	return v, nil
+}
+
+// DeleteVoucherLink turns the link off; anyone holding it gets "not found".
+func (s *Store) DeleteVoucherLink(ctx context.Context, id int) (*Voucher, error) {
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE vouchers SET link_token = NULL, sent_at = NULL, updated_at = now()
+		WHERE id = $1 AND status <> 'redeemed'`, id)
+	if err != nil {
+		return nil, err
+	}
+	v, err := s.GetVoucher(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if tag.RowsAffected() == 0 {
+		return nil, voucherErr("already_redeemed", "This voucher has already been redeemed")
+	}
+	return v, nil
+}
+
+// PublicVoucher is what the link holder sees. The code and recipient only
+// appear once redeemed, as proof to show the cashier.
+type PublicVoucher struct {
+	Amount        int        `json:"amount"`
+	ExpiresAt     *string    `json:"expires_at"`
+	Note          string     `json:"note"`
+	Status        string     `json:"status"` // active, expired, redeemed, void
+	Code          *string    `json:"code"`
+	RecipientName *string    `json:"recipient_name"`
+	RedeemedAt    *time.Time `json:"redeemed_at"`
+}
+
+func toPublic(v *Voucher) *PublicVoucher {
+	p := &PublicVoucher{Amount: v.Amount, ExpiresAt: v.ExpiresAt, Note: v.Note, Status: v.Status}
+	if v.Expired {
+		p.Status = "expired"
+	}
+	if v.Status == "redeemed" {
+		p.Code = &v.Code
+		p.RedeemedAt = v.RedeemedAt
+		if v.Recipient != nil {
+			p.RecipientName = &v.Recipient.Name
+		}
+	}
+	return p
+}
+
+func (s *Store) GetVoucherByLink(ctx context.Context, token string) (*PublicVoucher, error) {
+	v, err := scanVoucher(s.pool.QueryRow(ctx, voucherSelect+` WHERE v.link_token = $1`, token))
+	if err != nil {
+		return nil, err
+	}
+	return toPublic(v), nil
+}
+
+type LinkRedemption struct {
+	Name    string `json:"name"`
+	Phone   string `json:"phone"` // optional
+	Email   string `json:"email"`
+	Consent bool   `json:"consent"`
+}
+
+func (l *LinkRedemption) Validate() error {
+	var errs []string
+	var err error
+	if l.Name, err = requireText("name", l.Name, 200); err != nil {
+		errs = append(errs, err.Error())
+	}
+	l.Email = strings.ToLower(strings.TrimSpace(l.Email))
+	if addr, err := mail.ParseAddress(l.Email); err != nil || addr.Address != l.Email || len(l.Email) > 254 {
+		errs = append(errs, "email must be a valid email address")
+	}
+	if strings.TrimSpace(l.Phone) != "" {
+		if l.Phone, err = NormalizePhone(l.Phone); err != nil {
+			errs = append(errs, err.Error())
+		}
+	} else {
+		l.Phone = ""
+	}
+	if !l.Consent {
+		errs = append(errs, "consent to the privacy policy is required")
+	}
+	if len(errs) > 0 {
+		return errors.New(strings.Join(errs, "; "))
+	}
+	return nil
+}
+
+// RedeemVoucherByLink uses the voucher up on the customer's behalf. Like the
+// cashier path, one conditional UPDATE guarantees it happens only once.
+func (s *Store) RedeemVoucherByLink(ctx context.Context, token string, l LinkRedemption) (*PublicVoucher, error) {
+	var phone *string
+	if l.Phone != "" {
+		phone = &l.Phone
+	}
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE vouchers SET status = 'redeemed', redeemed_via = 'link', redeemed_at = now(), updated_at = now(),
+			recipient_name = $2, recipient_phone = $3, recipient_email = $4
+		WHERE link_token = $1 AND status = 'active'
+			AND (expires_at IS NULL OR expires_at >= `+jakartaToday+`)`,
+		token, l.Name, phone, l.Email)
+	if err != nil {
+		return nil, err
+	}
+	v, err := s.GetVoucherByLink(ctx, token)
+	if err != nil {
+		return nil, err
+	}
+	if tag.RowsAffected() == 1 {
+		return v, nil
+	}
+	switch v.Status {
+	case "redeemed":
+		return nil, voucherErr("already_redeemed", "This voucher has already been redeemed")
+	case "expired":
+		return nil, voucherErr("expired", "This voucher has expired")
+	default:
+		return nil, voucherErr("voided", "This voucher has been voided")
+	}
 }
