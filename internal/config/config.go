@@ -8,6 +8,7 @@ import (
 
 type Config struct {
 	Env           string // "dev" or "prod"
+	BindAddr      string // host to listen on; empty means all interfaces
 	Port          string
 	DatabaseURL   string
 	JWTSecret     []byte
@@ -22,7 +23,10 @@ func (c *Config) IsProd() bool { return c.Env == "prod" }
 // invalid so the process never starts half-configured.
 func Load() (*Config, error) {
 	c := &Config{
-		Env:           getenv("APP_ENV", "dev"),
+		Env: getenv("APP_ENV", "dev"),
+		// Behind a reverse proxy this should be 127.0.0.1 so the service is
+		// never reachable directly. Empty (all interfaces) keeps dev simple.
+		BindAddr:      os.Getenv("BIND_ADDR"),
 		Port:          getenv("PORT", "8080"),
 		DatabaseURL:   os.Getenv("DATABASE_URL"),
 		JWTSecret:     []byte(os.Getenv("JWT_SECRET")),

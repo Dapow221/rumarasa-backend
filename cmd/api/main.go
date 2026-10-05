@@ -53,7 +53,7 @@ func run() error {
 	go cleanupLoop(ctx, st)
 
 	server := &http.Server{
-		Addr:              ":" + cfg.Port,
+		Addr:              cfg.BindAddr + ":" + cfg.Port,
 		Handler:           httpapi.NewServer(cfg, st).Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       30 * time.Second,
