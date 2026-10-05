@@ -27,7 +27,7 @@ when the admins table is empty.
   `site.tagline`, `site.phone`, `hero.description`, etc. The frontend fetches
   them all at once (`GET /content`); admins edit per key (`PUT /content/{key}`).
 - **Collections** — list-shaped data: `dishes`, `promos`, `happenings`,
-  `facilities`, `member-benefits`. Uniform CRUD.
+  `member-benefits`. Uniform CRUD.
 - **Images** — multipart upload (max 5 MB, JPEG/PNG/WebP/GIF), stored as BYTEA,
   served with `Cache-Control: immutable`. Store the returned `url` in an item's
   `image_url` field.
