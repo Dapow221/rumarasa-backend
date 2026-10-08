@@ -59,7 +59,7 @@ func TestMemberEmails(t *testing.T) {
 	if m.To != "sekar@example.com" || !strings.Contains(m.Subject, "Diterima") {
 		t.Errorf("unexpected signup email: to=%s subject=%s", m.To, m.Subject)
 	}
-	if !strings.Contains(m.HTML, "Yth. Bapak/Ibu Sekar &lt;b&gt;Ayu&lt;/b&gt;,") || !strings.Contains(m.HTML, "<strong>Gold</strong>") {
+	if !strings.Contains(m.HTML, "Halo Sekar &lt;b&gt;Ayu&lt;/b&gt;,") || !strings.Contains(m.HTML, "<strong>Gold</strong>") {
 		t.Errorf("signup email must greet the (escaped) name and show the tier:\n%s", m.HTML)
 	}
 

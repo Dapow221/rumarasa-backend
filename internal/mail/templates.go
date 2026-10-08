@@ -29,9 +29,9 @@ const layout = `<!doctype html>
 <div style="margin-top:6px;font-size:13px;font-style:italic;color:#b06a2e;">Keluarga Rumarasa</div>
 </td></tr>
 <tr><td style="padding:16px 32px 32px;font-family:Georgia,'Times New Roman',serif;font-size:16px;line-height:1.65;color:#2a1b10;">
-<p style="margin:0 0 16px;">Yth. Bapak/Ibu {{.Name}},</p>
+<p style="margin:0 0 16px;">Halo {{.Name}},</p>
 {{.Body}}
-<p style="margin:24px 0 0;">Hormat kami,<br><strong>Rumarasa Nusantara</strong></p>
+<p style="margin:24px 0 0;">Salam hangat,<br><strong>Tim Rumarasa Nusantara</strong></p>
 </td></tr>
 <tr><td style="padding:16px 32px;border-top:1px solid #e7dccb;text-align:center;font-family:Arial,Helvetica,sans-serif;font-size:12px;line-height:1.6;color:#8a7a68;">
 Email ini dikirim secara otomatis, mohon tidak membalas email ini.<br>
@@ -73,7 +73,7 @@ func SignupReceived(to, name, tier, siteURL string) (Message, error) {
 	if err != nil {
 		return Message{}, err
 	}
-	text := fmt.Sprintf(`Yth. Bapak/Ibu %s,
+	text := fmt.Sprintf(`Halo %s,
 
 Terima kasih telah mendaftar sebagai member Keluarga Rumarasa.
 
@@ -81,8 +81,8 @@ Pendaftaran Anda untuk tier %s telah kami terima dan saat ini sedang diverifikas
 
 Setelah pendaftaran disetujui, kami akan mengirimkan nomor member beserta kartu member digital Anda melalui email ini.
 
-Hormat kami,
-Rumarasa Nusantara
+Salam hangat,
+Tim Rumarasa Nusantara
 
 Email ini dikirim secara otomatis, mohon tidak membalas email ini.`, name, TierName(tier))
 	return Message{To: to, Subject: subject, HTML: html, Text: text}, nil
@@ -115,7 +115,7 @@ func MemberCard(to, name, memberNo, tier, cardURL, siteURL string, cardPNG []byt
 	if err != nil {
 		return Message{}, err
 	}
-	text := fmt.Sprintf(`Yth. Bapak/Ibu %s,
+	text := fmt.Sprintf(`Halo %s,
 
 Selamat! Keanggotaan Anda di Keluarga Rumarasa telah aktif.
 
@@ -127,8 +127,8 @@ Silakan tunjukkan kartu ini kepada kasir setiap kali Anda berkunjung untuk menik
 
 Kami menantikan kunjungan Anda berikutnya.
 
-Hormat kami,
-Rumarasa Nusantara
+Salam hangat,
+Tim Rumarasa Nusantara
 
 Email ini dikirim secara otomatis, mohon tidak membalas email ini.`, name, memberNo, TierName(tier), cardURL)
 	return Message{To: to, Subject: subject, HTML: html, Text: text, Attachments: attachments}, nil
