@@ -14,6 +14,7 @@ import (
 	"rumarasa-backend/internal/auth"
 	"rumarasa-backend/internal/config"
 	"rumarasa-backend/internal/db"
+	"rumarasa-backend/internal/mail"
 	"rumarasa-backend/internal/store"
 )
 
@@ -21,6 +22,11 @@ import (
 // TEST_DATABASE_URL points at a disposable database — never the dev one, as
 // the members and reservations tables are truncated between tests.
 func newTestServer(t *testing.T) (http.Handler, string) {
+	t.Helper()
+	return newTestServerWith(t, &config.Config{}, nil)
+}
+
+func newTestServerWith(t *testing.T, base *config.Config, mailer mail.Sender) (http.Handler, string) {
 	t.Helper()
 	url := os.Getenv("TEST_DATABASE_URL")
 	if url == "" {
@@ -39,12 +45,13 @@ func newTestServer(t *testing.T) (http.Handler, string) {
 		t.Fatal(err)
 	}
 
-	cfg := &config.Config{Env: "dev", JWTSecret: []byte(strings.Repeat("s", 32))}
+	cfg := *base
+	cfg.Env, cfg.JWTSecret = "dev", []byte(strings.Repeat("s", 32))
 	token, err := auth.NewAccessToken(cfg.JWTSecret, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return NewServer(cfg, store.New(pool)).Handler(), token
+	return NewServer(&cfg, store.New(pool), mailer).Handler(), token
 }
 
 type result struct {

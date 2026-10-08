@@ -16,6 +16,7 @@ import (
 	"rumarasa-backend/internal/config"
 	"rumarasa-backend/internal/db"
 	"rumarasa-backend/internal/httpapi"
+	"rumarasa-backend/internal/mail"
 	"rumarasa-backend/internal/store"
 )
 
@@ -52,9 +53,17 @@ func run() error {
 	}
 	go cleanupLoop(ctx, st)
 
+	var mailer mail.Sender
+	if cfg.ResendAPIKey != "" {
+		mailer = mail.NewResend(cfg.ResendAPIKey, cfg.MailFrom)
+	} else {
+		slog.Warn("RESEND_API_KEY not set: member emails are disabled")
+	}
+	api := httpapi.NewServer(cfg, st, mailer)
+
 	server := &http.Server{
 		Addr:              cfg.BindAddr + ":" + cfg.Port,
-		Handler:           httpapi.NewServer(cfg, st).Handler(),
+		Handler:           api.Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      30 * time.Second,
@@ -77,6 +86,8 @@ func run() error {
 		if err := server.Shutdown(shutdownCtx); err != nil && !errors.Is(err, context.DeadlineExceeded) {
 			return err
 		}
+		// Let in-flight emails finish before the deferred pool.Close.
+		api.Wait()
 		return nil
 	}
 }

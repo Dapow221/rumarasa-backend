@@ -281,9 +281,24 @@ func (u MemberUpdate) Validate() error {
 }
 
 // UpdateMember changes status and/or tier. The first time a member becomes
-// active they are issued a permanent member number (RN000001, …).
-func (s *Store) UpdateMember(ctx context.Context, id int, u MemberUpdate) (*Member, error) {
-	return scanMember(s.pool.QueryRow(ctx, `
+// active they are issued a permanent member number (RN000001, …), and
+// firstActivation reports that so the caller can welcome them.
+func (s *Store) UpdateMember(ctx context.Context, id int, u MemberUpdate) (m *Member, firstActivation bool, err error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+	defer tx.Rollback(ctx)
+
+	var hadNumber bool
+	err = tx.QueryRow(ctx, `SELECT member_no IS NOT NULL FROM members WHERE id = $1 FOR UPDATE`, id).Scan(&hadNumber)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, false, ErrNotFound
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	m, err = scanMember(tx.QueryRow(ctx, `
 		UPDATE members SET
 			status = COALESCE($2, status),
 			tier = COALESCE($3, tier),
@@ -294,6 +309,13 @@ func (s *Store) UpdateMember(ctx context.Context, id int, u MemberUpdate) (*Memb
 			updated_at = now()
 		WHERE id = $1
 		RETURNING `+memberColumns, id, u.Status, u.Tier))
+	if err != nil {
+		return nil, false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, false, err
+	}
+	return m, !hadNumber && m.MemberNo != nil, nil
 }
 
 func (s *Store) DeleteMember(ctx context.Context, id int) error {
@@ -324,7 +346,7 @@ func (s *Store) CreateMemberCard(ctx context.Context, id int) (*Member, error) {
 		WHERE id = $1 AND status = 'active'
 		RETURNING `+memberColumns, id, base64.RawURLEncoding.EncodeToString(raw)))
 	if errors.Is(err, ErrNotFound) {
-		if _, err := s.getMember(ctx, id); err != nil {
+		if _, err := s.GetMember(ctx, id); err != nil {
 			return nil, err
 		}
 		return nil, ErrNotActive
@@ -347,7 +369,7 @@ func (s *Store) MarkMemberCardSent(ctx context.Context, id int) (*Member, error)
 		RETURNING `+memberColumns, id))
 }
 
-func (s *Store) getMember(ctx context.Context, id int) (*Member, error) {
+func (s *Store) GetMember(ctx context.Context, id int) (*Member, error) {
 	return scanMember(s.pool.QueryRow(ctx, `SELECT `+memberColumns+` FROM members WHERE id = $1`, id))
 }
 

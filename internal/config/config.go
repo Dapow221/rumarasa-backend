@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 )
@@ -15,6 +16,11 @@ type Config struct {
 	CORSOrigins   []string
 	AdminUsername string
 	AdminPassword string
+	// ResendAPIKey enables transactional email; empty means email is off.
+	ResendAPIKey string
+	MailFrom     string
+	// SiteURL is the public website, used for links and card images in email.
+	SiteURL string
 }
 
 func (c *Config) IsProd() bool { return c.Env == "prod" }
@@ -32,6 +38,9 @@ func Load() (*Config, error) {
 		JWTSecret:     []byte(os.Getenv("JWT_SECRET")),
 		AdminUsername: os.Getenv("ADMIN_USERNAME"),
 		AdminPassword: os.Getenv("ADMIN_PASSWORD"),
+		ResendAPIKey:  os.Getenv("RESEND_API_KEY"),
+		MailFrom:      getenv("MAIL_FROM", "Rumarasa Nusantara <noreply@rumarasanusantara.com>"),
+		SiteURL:       strings.TrimRight(getenv("SITE_URL", "http://localhost:3000"), "/"),
 	}
 
 	for _, origin := range strings.Split(getenv("CORS_ORIGINS", "http://localhost:3000"), ",") {
@@ -46,6 +55,9 @@ func Load() (*Config, error) {
 	}
 	if len(c.JWTSecret) < 32 {
 		errs = append(errs, "JWT_SECRET is required and must be at least 32 characters")
+	}
+	if u, err := url.Parse(c.SiteURL); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		errs = append(errs, "SITE_URL must be an absolute http(s) URL")
 	}
 	if c.Env != "dev" && c.Env != "prod" {
 		errs = append(errs, `APP_ENV must be "dev" or "prod"`)

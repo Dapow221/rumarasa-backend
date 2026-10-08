@@ -92,6 +92,7 @@ func (s *Server) handleCreateMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	slog.Info("member signup received", "member_id", m.ID)
+	s.sendSignupReceived(m)
 	// Only the status goes back: the public caller has no business reading the
 	// stored record, and echoing it would turn this into a PII lookup.
 	respondData(w, http.StatusCreated, map[string]string{"status": m.Status})
@@ -167,7 +168,7 @@ func (s *Server) handleUpdateMember(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusBadRequest, "validation", err.Error())
 		return
 	}
-	m, err := s.store.UpdateMember(r.Context(), id, body)
+	m, firstActivation, err := s.store.UpdateMember(r.Context(), id, body)
 	if errors.Is(err, store.ErrNotFound) {
 		respondError(w, http.StatusNotFound, "not_found", "Member not found")
 		return
@@ -178,6 +179,12 @@ func (s *Server) handleUpdateMember(w http.ResponseWriter, r *http.Request) {
 	}
 	adminID, _ := adminIDFrom(r.Context())
 	slog.Info("member updated", "admin_id", adminID, "member_id", m.ID, "status", m.Status, "tier", m.Tier)
+	if firstActivation {
+		approved := *m
+		s.sendInBackground("member_card", m.ID, func(ctx context.Context) error {
+			return s.sendMemberCard(ctx, &approved)
+		})
+	}
 	respondData(w, http.StatusOK, m)
 }
 

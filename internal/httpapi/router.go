@@ -4,23 +4,30 @@ import (
 	"log/slog"
 	"net/http"
 	"runtime/debug"
+	"sync"
 	"time"
 
 	"rumarasa-backend/internal/config"
+	"rumarasa-backend/internal/mail"
 	"rumarasa-backend/internal/store"
 )
 
 type Server struct {
 	cfg         *config.Config
 	store       *store.Store
+	mailer      mail.Sender // nil when email is not configured
+	http        *http.Client
+	bg          sync.WaitGroup
 	authLimiter *rateLimiter
 	formLimiter *rateLimiter
 }
 
-func NewServer(cfg *config.Config, st *store.Store) *Server {
+func NewServer(cfg *config.Config, st *store.Store, mailer mail.Sender) *Server {
 	return &Server{
 		cfg:         cfg,
 		store:       st,
+		mailer:      mailer,
+		http:        &http.Client{Timeout: 20 * time.Second},
 		authLimiter: newRateLimiter(10, time.Minute),
 		formLimiter: newRateLimiter(5, 10*time.Minute),
 	}
@@ -58,6 +65,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/v1/admin/members/{id}/card", s.admin(s.handleCreateMemberCard))
 	mux.Handle("DELETE /api/v1/admin/members/{id}/card", s.admin(s.handleDeleteMemberCard))
 	mux.Handle("POST /api/v1/admin/members/{id}/card/sent", s.admin(s.handleSendMemberCard))
+	mux.Handle("POST /api/v1/admin/members/{id}/card/email", s.admin(s.handleEmailMemberCard))
 	mux.Handle("GET /api/v1/admin/reservations", s.admin(s.handleListReservations))
 	mux.Handle("PATCH /api/v1/admin/reservations/{id}", s.admin(s.handleUpdateReservation))
 	mux.Handle("DELETE /api/v1/admin/reservations/{id}", s.admin(s.handleDeleteReservation))
