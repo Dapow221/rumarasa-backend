@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"net/mail"
@@ -90,27 +92,29 @@ var (
 )
 
 type Member struct {
-	ID        int       `json:"id"`
-	MemberNo  *string   `json:"member_no"`
-	Name      string    `json:"name"`
-	Phone     string    `json:"phone"`
-	Email     string    `json:"email"`
-	Birthday  string    `json:"birthday"`
-	Address   string    `json:"address"`
-	Status    string    `json:"status"`
-	Tier      string    `json:"tier"`
-	ConsentAt time.Time `json:"consent_at"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID         int        `json:"id"`
+	MemberNo   *string    `json:"member_no"`
+	Name       string     `json:"name"`
+	Phone      string     `json:"phone"`
+	Email      string     `json:"email"`
+	Birthday   string     `json:"birthday"`
+	Address    string     `json:"address"`
+	Status     string     `json:"status"`
+	Tier       string     `json:"tier"`
+	CardToken  *string    `json:"card_token"`
+	CardSentAt *time.Time `json:"card_sent_at"`
+	ConsentAt  time.Time  `json:"consent_at"`
+	CreatedAt  time.Time  `json:"created_at"`
+	UpdatedAt  time.Time  `json:"updated_at"`
 }
 
 const memberColumns = `id, member_no, name, phone, email, birthday::text, address,
-	status, tier, consent_at, created_at, updated_at`
+	status, tier, card_token, card_sent_at, consent_at, created_at, updated_at`
 
 func scanMember(row pgx.Row) (*Member, error) {
 	var m Member
 	err := row.Scan(&m.ID, &m.MemberNo, &m.Name, &m.Phone, &m.Email, &m.Birthday, &m.Address,
-		&m.Status, &m.Tier, &m.ConsentAt, &m.CreatedAt, &m.UpdatedAt)
+		&m.Status, &m.Tier, &m.CardToken, &m.CardSentAt, &m.ConsentAt, &m.CreatedAt, &m.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -126,6 +130,7 @@ type NewMember struct {
 	Email    string `json:"email"`
 	Birthday string `json:"birthday"`
 	Address  string `json:"address"`
+	Tier     string `json:"tier"` // requested tier; empty means silver
 	Consent  bool   `json:"consent"`
 }
 
@@ -152,6 +157,11 @@ func (n *NewMember) Validate() error {
 	if n.Address, err = requireText("address", n.Address, 1000); err != nil {
 		errs = append(errs, err.Error())
 	}
+	if n.Tier = strings.TrimSpace(n.Tier); n.Tier == "" {
+		n.Tier = "silver"
+	} else if !slices.Contains(MemberTiers, n.Tier) {
+		errs = append(errs, fmt.Sprintf("tier must be one of %s", strings.Join(MemberTiers, ", ")))
+	}
 	if !n.Consent {
 		errs = append(errs, "consent to the privacy policy is required")
 	}
@@ -161,14 +171,15 @@ func (n *NewMember) Validate() error {
 	return nil
 }
 
-// CreateMember stores a pending signup. A phone number that is already
-// registered returns ErrConflict.
+// CreateMember stores a pending signup with the tier the applicant asked for;
+// the admin confirms or changes it on approval. A phone number that is
+// already registered returns ErrConflict.
 func (s *Store) CreateMember(ctx context.Context, n NewMember) (*Member, error) {
 	m, err := scanMember(s.pool.QueryRow(ctx, `
-		INSERT INTO members (name, phone, email, birthday, address, consent_at)
-		VALUES ($1, $2, $3, $4, $5, now())
+		INSERT INTO members (name, phone, email, birthday, address, tier, consent_at)
+		VALUES ($1, $2, $3, $4, $5, $6, now())
 		RETURNING `+memberColumns,
-		n.Name, n.Phone, n.Email, n.Birthday, n.Address))
+		n.Name, n.Phone, n.Email, n.Birthday, n.Address, n.Tier))
 	if isUniqueViolation(err) {
 		return nil, ErrConflict
 	}
@@ -294,6 +305,75 @@ func (s *Store) DeleteMember(ctx context.Context, id int) error {
 		return ErrNotFound
 	}
 	return nil
+}
+
+// ---------- Membership cards ----------
+
+// ErrNotActive means the member can't have a card link until they are active.
+var ErrNotActive = errors.New("member not active")
+
+// CreateMemberCard gives an active member a fresh secret card link, replacing
+// any earlier one.
+func (s *Store) CreateMemberCard(ctx context.Context, id int) (*Member, error) {
+	raw := make([]byte, 24)
+	if _, err := rand.Read(raw); err != nil {
+		return nil, err
+	}
+	m, err := scanMember(s.pool.QueryRow(ctx, `
+		UPDATE members SET card_token = $2, card_sent_at = NULL, updated_at = now()
+		WHERE id = $1 AND status = 'active'
+		RETURNING `+memberColumns, id, base64.RawURLEncoding.EncodeToString(raw)))
+	if errors.Is(err, ErrNotFound) {
+		if _, err := s.getMember(ctx, id); err != nil {
+			return nil, err
+		}
+		return nil, ErrNotActive
+	}
+	return m, err
+}
+
+// DeleteMemberCard turns the card link off; anyone holding it gets "not found".
+func (s *Store) DeleteMemberCard(ctx context.Context, id int) (*Member, error) {
+	return scanMember(s.pool.QueryRow(ctx, `
+		UPDATE members SET card_token = NULL, card_sent_at = NULL, updated_at = now()
+		WHERE id = $1
+		RETURNING `+memberColumns, id))
+}
+
+func (s *Store) MarkMemberCardSent(ctx context.Context, id int) (*Member, error) {
+	return scanMember(s.pool.QueryRow(ctx, `
+		UPDATE members SET card_sent_at = now(), updated_at = now()
+		WHERE id = $1 AND card_token IS NOT NULL
+		RETURNING `+memberColumns, id))
+}
+
+func (s *Store) getMember(ctx context.Context, id int) (*Member, error) {
+	return scanMember(s.pool.QueryRow(ctx, `SELECT `+memberColumns+` FROM members WHERE id = $1`, id))
+}
+
+// MemberCard is what the card link shows: no contact details, so a forwarded
+// link leaks nothing beyond the name on the card.
+type MemberCard struct {
+	Name     string    `json:"name"`
+	MemberNo string    `json:"member_no"`
+	Tier     string    `json:"tier"`
+	Status   string    `json:"status"`
+	JoinedAt time.Time `json:"joined_at"`
+}
+
+func (s *Store) GetMemberCard(ctx context.Context, token string) (*MemberCard, error) {
+	var c MemberCard
+	err := s.pool.QueryRow(ctx, `
+		SELECT name, member_no, tier, status, created_at FROM members
+		WHERE card_token = $1 AND member_no IS NOT NULL`, token,
+	).Scan(&c.Name, &c.MemberNo, &c.Tier, &c.Status, &c.JoinedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &c, nil
 }
 
 // ---------- Reservations ----------

@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/csv"
 	"encoding/json"
 	"errors"
@@ -324,4 +325,63 @@ func (s *Server) handleAdminSummary(w http.ResponseWriter, r *http.Request) {
 		"pending_members":      members,
 		"pending_reservations": reservations,
 	})
+}
+
+// ---------- Membership cards ----------
+
+func respondMemberCardErr(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		respondError(w, http.StatusNotFound, "not_found", "Member not found")
+	case errors.Is(err, store.ErrNotActive):
+		respondError(w, http.StatusConflict, "not_active", "Only active members can get a card")
+	default:
+		respondInternal(w, err)
+	}
+}
+
+// memberCardAction runs one admin card operation on the member in the path.
+func memberCardAction(w http.ResponseWriter, r *http.Request, action string,
+	fn func(ctx context.Context, id int) (*store.Member, error)) {
+	id, ok := itemID(w, r)
+	if !ok {
+		return
+	}
+	m, err := fn(r.Context(), id)
+	if err != nil {
+		respondMemberCardErr(w, err)
+		return
+	}
+	adminID, _ := adminIDFrom(r.Context())
+	slog.Info(action, "admin_id", adminID, "member_id", m.ID)
+	respondData(w, http.StatusOK, m)
+}
+
+func (s *Server) handleCreateMemberCard(w http.ResponseWriter, r *http.Request) {
+	memberCardAction(w, r, "member card created", s.store.CreateMemberCard)
+}
+
+func (s *Server) handleDeleteMemberCard(w http.ResponseWriter, r *http.Request) {
+	memberCardAction(w, r, "member card revoked", s.store.DeleteMemberCard)
+}
+
+func (s *Server) handleSendMemberCard(w http.ResponseWriter, r *http.Request) {
+	memberCardAction(w, r, "member card sent", s.store.MarkMemberCardSent)
+}
+
+func (s *Server) handleGetMemberCard(w http.ResponseWriter, r *http.Request) {
+	token, ok := linkToken(w, r, "Card not found")
+	if !ok {
+		return
+	}
+	c, err := s.store.GetMemberCard(r.Context(), token)
+	if errors.Is(err, store.ErrNotFound) {
+		respondError(w, http.StatusNotFound, "not_found", "Card not found")
+		return
+	}
+	if err != nil {
+		respondInternal(w, err)
+		return
+	}
+	respondData(w, http.StatusOK, c)
 }

@@ -55,6 +55,9 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/v1/admin/members/export", s.admin(s.handleExportMembers))
 	mux.Handle("PATCH /api/v1/admin/members/{id}", s.admin(s.handleUpdateMember))
 	mux.Handle("DELETE /api/v1/admin/members/{id}", s.admin(s.handleDeleteMember))
+	mux.Handle("POST /api/v1/admin/members/{id}/card", s.admin(s.handleCreateMemberCard))
+	mux.Handle("DELETE /api/v1/admin/members/{id}/card", s.admin(s.handleDeleteMemberCard))
+	mux.Handle("POST /api/v1/admin/members/{id}/card/sent", s.admin(s.handleSendMemberCard))
 	mux.Handle("GET /api/v1/admin/reservations", s.admin(s.handleListReservations))
 	mux.Handle("PATCH /api/v1/admin/reservations/{id}", s.admin(s.handleUpdateReservation))
 	mux.Handle("DELETE /api/v1/admin/reservations/{id}", s.admin(s.handleDeleteReservation))
@@ -71,6 +74,7 @@ func (s *Server) Handler() http.Handler {
 
 	// Link vouchers for non-members: the secret token is the only key
 	mux.HandleFunc("GET /api/v1/vouchers/link/{token}", s.handleGetVoucherByLink)
+	mux.HandleFunc("GET /api/v1/members/card/{token}", s.handleGetMemberCard)
 	mux.Handle("POST /api/v1/vouchers/link/{token}/redeem", s.rateLimit(s.formLimiter, http.HandlerFunc(s.handleRedeemVoucherByLink)))
 
 	// Collections (dishes, promos, happenings, facilities, member-benefits)

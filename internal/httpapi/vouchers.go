@@ -191,18 +191,18 @@ var linkTokenRe = regexp.MustCompile(`^[A-Za-z0-9_-]{32}$`)
 
 // linkToken reads the token from the path. Responses are never cached: the
 // URL is a secret and the voucher's state changes once it's redeemed.
-func linkToken(w http.ResponseWriter, r *http.Request) (string, bool) {
+func linkToken(w http.ResponseWriter, r *http.Request, notFound string) (string, bool) {
 	w.Header().Set("Cache-Control", "no-store")
 	t := r.PathValue("token")
 	if !linkTokenRe.MatchString(t) {
-		respondError(w, http.StatusNotFound, "not_found", "Voucher not found")
+		respondError(w, http.StatusNotFound, "not_found", notFound)
 		return "", false
 	}
 	return t, true
 }
 
 func (s *Server) handleGetVoucherByLink(w http.ResponseWriter, r *http.Request) {
-	token, ok := linkToken(w, r)
+	token, ok := linkToken(w, r, "Voucher not found")
 	if !ok {
 		return
 	}
@@ -215,7 +215,7 @@ func (s *Server) handleGetVoucherByLink(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Server) handleRedeemVoucherByLink(w http.ResponseWriter, r *http.Request) {
-	token, ok := linkToken(w, r)
+	token, ok := linkToken(w, r, "Voucher not found")
 	if !ok {
 		return
 	}

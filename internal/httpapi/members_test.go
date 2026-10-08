@@ -251,3 +251,93 @@ func TestClientIPBehindProxy(t *testing.T) {
 		t.Errorf("direct client must not be able to spoof XFF: got %s", got)
 	}
 }
+
+func TestMemberSignupTier(t *testing.T) {
+	h, token := newTestServer(t)
+
+	gold := validMember()
+	gold["tier"] = "gold"
+	if res := do(t, h, "POST", "/api/v1/members", "", gold); res.Status != http.StatusCreated {
+		t.Fatalf("gold signup: got %d %s", res.Status, res.Raw)
+	}
+	noTier := validMember()
+	noTier["phone"] = "081299990000"
+	if res := do(t, h, "POST", "/api/v1/members", "", noTier); res.Status != http.StatusCreated {
+		t.Fatalf("signup without tier: got %d %s", res.Status, res.Raw)
+	}
+	bad := validMember()
+	bad["phone"] = "081288880000"
+	bad["tier"] = "black"
+	if res := do(t, h, "POST", "/api/v1/members", "", bad); res.Status != http.StatusBadRequest {
+		t.Fatalf("unknown tier: got %d %s", res.Status, res.Raw)
+	}
+
+	res := do(t, h, "GET", "/api/v1/admin/members", token, nil)
+	tiers := map[string]string{}
+	for _, v := range res.Body["data"].([]any) {
+		m := v.(map[string]any)
+		tiers[m["phone"].(string)] = m["tier"].(string)
+	}
+	if tiers["6281234567890"] != "gold" || tiers["6281299990000"] != "silver" || len(tiers) != 2 {
+		t.Errorf("unexpected tiers: %v", tiers)
+	}
+}
+
+func TestMemberCard(t *testing.T) {
+	h, token := newTestServer(t)
+
+	do(t, h, "POST", "/api/v1/members", "", validMember())
+	if res := do(t, h, "POST", "/api/v1/admin/members/1/card", token, nil); res.Status != http.StatusConflict {
+		t.Fatalf("card for pending member: got %d %s", res.Status, res.Raw)
+	}
+	if res := do(t, h, "POST", "/api/v1/admin/members/99/card", token, nil); res.Status != http.StatusNotFound {
+		t.Fatalf("card for missing member: got %d %s", res.Status, res.Raw)
+	}
+	if res := do(t, h, "POST", "/api/v1/admin/members/1/card", "", nil); res.Status != http.StatusUnauthorized {
+		t.Fatalf("card without token: got %d", res.Status)
+	}
+
+	do(t, h, "PATCH", "/api/v1/admin/members/1", token, map[string]any{"status": "active", "tier": "platinum"})
+	res := do(t, h, "POST", "/api/v1/admin/members/1/card", token, nil)
+	if res.Status != http.StatusOK {
+		t.Fatalf("create card: got %d %s", res.Status, res.Raw)
+	}
+	first := res.Body["data"].(map[string]any)["card_token"].(string)
+
+	res = do(t, h, "GET", "/api/v1/members/card/"+first, "", nil)
+	if res.Status != http.StatusOK {
+		t.Fatalf("public card: got %d %s", res.Status, res.Raw)
+	}
+	card := res.Body["data"].(map[string]any)
+	if card["name"] != "Sekar Ayu" || card["member_no"] != "RN000001" || card["tier"] != "platinum" || card["status"] != "active" {
+		t.Errorf("unexpected card: %v", card)
+	}
+	if strings.Contains(res.Raw, "6281234567890") || strings.Contains(res.Raw, "sekar@example.com") {
+		t.Errorf("card must not expose contact details: %s", res.Raw)
+	}
+
+	if res := do(t, h, "POST", "/api/v1/admin/members/1/card/sent", token, nil); res.Status != http.StatusOK ||
+		res.Body["data"].(map[string]any)["card_sent_at"] == nil {
+		t.Fatalf("mark sent: got %d %s", res.Status, res.Raw)
+	}
+
+	// Re-creating rotates the token: the old link stops working.
+	res = do(t, h, "POST", "/api/v1/admin/members/1/card", token, nil)
+	second := res.Body["data"].(map[string]any)["card_token"].(string)
+	if second == first {
+		t.Fatal("card token was not rotated")
+	}
+	if res := do(t, h, "GET", "/api/v1/members/card/"+first, "", nil); res.Status != http.StatusNotFound {
+		t.Fatalf("old card link: got %d", res.Status)
+	}
+
+	if res := do(t, h, "DELETE", "/api/v1/admin/members/1/card", token, nil); res.Status != http.StatusOK {
+		t.Fatalf("revoke card: got %d %s", res.Status, res.Raw)
+	}
+	if res := do(t, h, "GET", "/api/v1/members/card/"+second, "", nil); res.Status != http.StatusNotFound {
+		t.Fatalf("revoked card link: got %d", res.Status)
+	}
+	if res := do(t, h, "GET", "/api/v1/members/card/bad*token", "", nil); res.Status != http.StatusNotFound {
+		t.Fatalf("malformed token: got %d", res.Status)
+	}
+}
